@@ -52,12 +52,16 @@ logging.basicConfig(level=logging.INFO)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    member = await context.bot.get_chat_member(
-        f"@{CHANNEL_USERNAME}",
-        user.id
-    )
+    try:
+        member = await context.bot.get_chat_member(
+            f"@{CHANNEL_USERNAME}",
+            user.id
+        )
 
-    if member.status in ["left", "kicked"]:
+        if member.status in ["left", "kicked"]:
+            raise Exception("Not joined")
+
+    except:
         keyboard = [
             [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME}")]
         ]
