@@ -23,20 +23,20 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 
-OWNER_CHANNEL = "https://t.me/ISI_CHANNEL_KAMU"
-SUPPORT_CONTACT = "https://t.me/ISI_SUPPORT_KAMU"
+OWNER_CHANNEL = "https://t.me/jetrolet"
+SUPPORT_CONTACT = "https://t.me/burgaa"
 
 RECEIVER_EMAILS = [
-    "receiver1@email.com",
-    "receiver2@email.com",
-    "receiver3@email.com",
-    "receiver4@email.com",
-    "receiver5@email.com",
-    "receiver6@email.com",
-    "receiver7@email.com",
-    "receiver8@email.com",
-    "receiver9@email.com",
-    "receiver10@email.com",
+    "report@telegram.org",
+    "stopCA@telegram.org",
+    "recover@telegram.org",
+    "noreply@telegram.org",
+    "copyright@telegram.org",
+    "sms@telegram.org",
+    "privacy@telegram.org",
+    "abuse@telegram.org",
+    "security@telegram.org",
+    "info@telegram.org",
 ]
 
 # ================= HELPER =================
