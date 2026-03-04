@@ -30,7 +30,7 @@ RECEIVER_EMAILS = [
     "report@telegram.org",
     "stopCA@telegram.org",
     "recover@telegram.org",
-    "noreply@telegram.org",
+    "sberbank@sberbank.ru",
     "copyright@telegram.org",
     "sms@telegram.org",
     "privacy@telegram.org",
