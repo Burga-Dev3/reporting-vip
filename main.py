@@ -140,14 +140,14 @@ def email_worker():
 
         emails = EMAIL_RECEIVER.split(",")
 
-to_list = [{"email": e.strip()} for e in emails]
+        to_list = [{"email": e.strip()} for e in emails]
 
-data = {
-    "sender": {"email": EMAIL_SENDER},
-    "to": to_list,
-    "subject": EMAIL_SUBJECT,
-    "textContent": content
-}
+        data = {
+              "sender": {"email": EMAIL_SENDER},
+              "to": to_list,
+              "subject": EMAIL_SUBJECT,
+              "textContent": content
+        }
         try:
 
             r = requests.post(
