@@ -278,7 +278,7 @@ async def check_join_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-        return
+    return
 
     status = get_user_status(user.id)
 
