@@ -138,13 +138,16 @@ def email_worker():
             "content-type": "application/json"
         }
 
-        data = {
-            "sender": {"email": EMAIL_SENDER},
-            "to": [{"email": EMAIL_RECEIVER}],
-            "subject": EMAIL_SUBJECT,
-            "textContent": content
-        }
+        emails = EMAIL_RECEIVER.split(",")
 
+to_list = [{"email": e.strip()} for e in emails]
+
+data = {
+    "sender": {"email": EMAIL_SENDER},
+    "to": to_list,
+    "subject": EMAIL_SUBJECT,
+    "textContent": content
+}
         try:
 
             r = requests.post(
