@@ -1,273 +1,443 @@
 import os
+import re
+import time
+import sqlite3
 import logging
-from datetime import datetime, timedelta
-import pytz
 import requests
+import threading
+from queue import Queue
+from datetime import datetime
+from io import BytesIO
+
+from PIL import Image, ImageDraw, ImageFont
 
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup
 )
+
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    CallbackQueryHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters
 )
 
 # ================= BRANDING =================
-BRAND_NAME = "Reporting Vip"
+
+BOT_BRAND = "Reporting Vip"
 
 # ================= CONFIG =================
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID"))
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
+
+EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT")
+EMAIL_TEMPLATE = os.getenv("EMAIL_TEMPLATE")
 
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
-SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME")
+CHANNEL_URL = os.getenv("CHANNEL_URL")
 
-BREVO_API_KEY = os.getenv("BREVO_API_KEY")
-SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+SUPPORT_URL = os.getenv("SUPPORT_URL")
 
-EMAIL_RECEIVERS = [
-    email.strip()
-    for email in os.getenv("EMAIL_RECEIVERS", "").split(",")
-    if email.strip()
+OWNER_ID = int(os.getenv("OWNER_ID"))
+
+REPORT_DELAY = 60
+
+# ================= VALIDATE ENV =================
+
+required_vars = [
+    BOT_TOKEN,
+    BREVO_API_KEY,
+    EMAIL_SENDER,
+    EMAIL_RECEIVER,
+    EMAIL_SUBJECT,
+    EMAIL_TEMPLATE,
 ]
 
-EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "📨 Laporan akun Telegram")
-EMAIL_TEMPLATE = os.getenv(
-    "EMAIL_TEMPLATE",
-    "🚨 Laporan Akun 🚨\n\n"
-    "Username: {target}\n"
-    "Link Profil: {target_link}"
+if not all(required_vars):
+    raise RuntimeError("Beberapa environment variable belum diisi")
+
+# ================= LOGGING =================
+
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
 )
 
-# ================= STORAGE =================
-approved_users = set()
-user_last_report = {}
-blocked_users = set()
+# ================= DATABASE =================
 
-logging.basicConfig(level=logging.INFO)
+conn = sqlite3.connect("bot.db", check_same_thread=False)
+cursor = conn.cursor()
 
-# ================= START =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users(
+user_id INTEGER PRIMARY KEY
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS reports(
+case_id TEXT,
+target TEXT,
+user_id INTEGER,
+date TEXT
+)
+""")
+
+conn.commit()
+
+# ================= MEMORY =================
+
+WAITING_REPORT = set()
+LAST_REPORT = {}
+
+# ================= EMAIL QUEUE =================
+
+email_queue = Queue()
+
+# ================= USER STATUS =================
+
+def get_user_status(user_id):
+
+    if user_id == OWNER_ID:
+        return "Owner 👑"
+
+    return "Member 👤"
+
+# ================= VALIDATE USERNAME =================
+
+def validate_username(username):
+    pattern = r"^@[A-Za-z][A-Za-z0-9_]{4,}$"
+    return re.match(pattern, username)
+
+# ================= CASE ID =================
+
+def generate_case():
+    return datetime.utcnow().strftime("CASE-%Y%m%d-%H%M%S")
+
+# ================= EMAIL WORKER =================
+
+def email_worker():
+
+    while True:
+
+        content = email_queue.get()
+
+        url = "https://api.brevo.com/v3/smtp/email"
+
+        headers = {
+            "accept": "application/json",
+            "api-key": BREVO_API_KEY,
+            "content-type": "application/json"
+        }
+
+        data = {
+            "sender": {"email": EMAIL_SENDER},
+            "to": [{"email": EMAIL_RECEIVER}],
+            "subject": EMAIL_SUBJECT,
+            "textContent": content
+        }
+
+        try:
+
+            r = requests.post(
+                url,
+                headers=headers,
+                json=data,
+                timeout=10
+            )
+
+            logging.info(f"Email sent status {r.status_code}")
+
+        except Exception as e:
+
+            logging.warning(f"Email failed: {e}")
+
+        email_queue.task_done()
+
+threading.Thread(target=email_worker, daemon=True).start()
+
+# ================= CHANNEL CHECK =================
+
+async def check_join(bot, user_id):
 
     try:
-        member = await context.bot.get_chat_member(
-            f"@{CHANNEL_USERNAME}",
-            user.id
-        )
 
-        if member.status in ["left", "kicked"]:
-            raise Exception("Not joined")
+        member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        return member.status in ["member","administrator","creator"]
 
     except:
-        keyboard = [
-            [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME}")]
-        ]
+        return False
 
-        await update.message.reply_text(
-            "⚠️ Anda wajib join channel terlebih dahulu.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
+# ================= PROFILE CARD =================
 
-    await send_welcome(update.message)
+async def generate_profile_card(bot, user):
 
-# ================= WELCOME =================
-async def send_welcome(message):
-    user = message.from_user
-    wib = pytz.timezone("Asia/Jakarta")
-    now = datetime.now(wib).strftime("%d-%m-%Y %H:%M:%S WIB")
+    photos = await bot.get_user_profile_photos(user.id, limit=1)
 
-    role = "👑 OWNER" if user.id == OWNER_ID else "👤 USER"
+    if photos.total_count == 0:
+        return None
 
-    welcome_text = (
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"🚨 {BRAND_NAME} 🚨\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"{role}\n\n"
-        f"👤 Nama: {user.full_name}\n"
-        f"🔗 Username: @{user.username}\n"
-        f"🆔 ID: {user.id}\n"
-        f"⭐ Premium: {'Ya' if user.is_premium else 'Tidak'}\n"
-        f"🕒 Waktu: {now}"
-    )
+    file = await bot.get_file(photos.photos[0][-1].file_id)
 
-    keyboard = [
-        [
-            InlineKeyboardButton("📢 Saluran", url=f"https://t.me/{CHANNEL_USERNAME}"),
-            InlineKeyboardButton("☎️ Support", url=f"https://t.me/{SUPPORT_USERNAME}")
-        ],
-        [
-            InlineKeyboardButton("📨 REPORT", callback_data="buat_laporan")
-        ]
-    ]
+    r = requests.get(file.file_path)
 
-    await message.reply_text(
-        welcome_text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    avatar = Image.open(BytesIO(r.content)).convert("RGBA")
 
-# ================= REPORT BUTTON =================
-async def handle_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    await query.answer()
+    avatar = avatar.resize((300,300))
 
-    if user.id in blocked_users:
-        await query.message.reply_text("🚫 Anda diblokir karena spam.")
-        return
+    width = 900
+    height = 450
 
-    if user.id == OWNER_ID or user.id in approved_users:
-        context.user_data["awaiting_report"] = True
-        await query.message.reply_text(
-            "📨 Kirim username target.\nContoh: @username"
-        )
-        return
+    bg = Image.new("RGBA",(width,height))
+    draw = ImageDraw.Draw(bg)
 
-    await query.message.reply_text(
-        "⚠️ Anda belum memiliki akses.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔑 Minta Akses", callback_data="request_access")]
-        ])
-    )
+    for y in range(height):
+        r = int(20 + (y/height)*80)
+        g = int(20 + (y/height)*40)
+        b = int(60 + (y/height)*120)
+        draw.line([(0,y),(width,y)],fill=(r,g,b))
 
-# ================= REQUEST ACCESS =================
-async def handle_request_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    await query.answer()
+    mask = Image.new("L",(300,300),0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.ellipse((0,0,300,300),fill=255)
 
-    await query.message.reply_text("📨 Permintaan dikirim ke owner.")
+    avatar_circle = Image.new("RGBA",(300,300))
+    avatar_circle.paste(avatar,(0,0),mask)
 
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
-            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user.id}")
-        ]
-    ]
+    bg.paste(avatar_circle,(60,75),avatar_circle)
 
-    await context.bot.send_message(
-        OWNER_ID,
-        f"🔔 Permintaan Akses\n\n"
-        f"👤 Nama: {user.full_name}\n"
-        f"🔗 Username: @{user.username}\n"
-        f"🆔 ID: {user.id}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    frame = ImageDraw.Draw(bg)
+    frame.ellipse((55,70,365,380),outline=(255,215,0),width=6)
 
-# ================= APPROVE / REJECT =================
-async def handle_owner_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    try:
+        font_big = ImageFont.truetype("arial.ttf",48)
+        font_mid = ImageFont.truetype("arial.ttf",26)
+        font_small = ImageFont.truetype("arial.ttf",22)
+    except:
+        font_big = ImageFont.load_default()
+        font_mid = ImageFont.load_default()
+        font_small = ImageFont.load_default()
 
-    if query.from_user.id != OWNER_ID:
-        return
+    username = user.username if user.username else "None"
 
-    action, user_id = query.data.split("_")
-    user_id = int(user_id)
+    draw.text((420,60),BOT_BRAND,fill=(255,215,0),font=font_big)
 
-    if action == "approve":
-        approved_users.add(user_id)
+    draw.text((420,150),f"Name : {user.first_name}",fill=(255,255,255),font=font_mid)
 
-        await context.bot.send_message(
-            user_id,
-            "✅ Akses kamu telah disetujui!\n\nSekarang kamu bisa menggunakan fitur 📩 REPORT."
-        )
+    draw.text((420,200),f"Username : @{username}",fill=(200,200,200),font=font_small)
 
-        await query.message.reply_text("✅ User berhasil di-approve.")
+    draw.text((420,240),f"User ID : {user.id}",fill=(200,200,200),font=font_small)
 
-    elif action == "reject":
-        await context.bot.send_message(
-            user_id,
-            "❌ Permintaan akses kamu ditolak."
-        )
+    draw.text((420,300),"VIP Reporting System",fill=(180,180,255),font=font_small)
 
-        await query.message.reply_text("❌ User ditolak.")
+    bio = BytesIO()
+    bio.name = "profile_card.png"
 
-# ================= HANDLE TARGET =================
-async def handle_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bg.save(bio,"PNG")
+
+    bio.seek(0)
+
+    return bio
+
+# ================= START =================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user = update.effective_user
 
-    if not context.user_data.get("awaiting_report"):
-        return
+    cursor.execute("INSERT OR IGNORE INTO users VALUES(?)",(user.id,))
+    conn.commit()
 
-    target = update.message.text.strip()
+    joined = await check_join(context.bot,user.id)
 
-    if not target.startswith("@"):
+    if not joined:
+
+        keyboard = [
+            [InlineKeyboardButton("📢 Join Saluran",url=CHANNEL_URL)],
+            [InlineKeyboardButton("✅ Saya Sudah Join",callback_data="check_join")]
+        ]
+
         await update.message.reply_text(
-            "⚠️ Format salah!\nGunakan format: @username"
+            f"🚫 {BOT_BRAND}\n\nKamu harus join saluran terlebih dahulu untuk menggunakan bot ini.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
         return
 
-    target_clean = target.replace("@", "")
-    target_link = f"https://t.me/{target_clean}"
+    status = get_user_status(user.id)
 
     now = datetime.utcnow()
-    last_time = user_last_report.get(user.id)
+    date = now.strftime("%Y-%m-%d")
 
-    if last_time and (now - last_time) < timedelta(minutes=2):
+    keyboard = [
+        [InlineKeyboardButton("📋 Kirim Laporan",callback_data="report")],
+        [
+            InlineKeyboardButton("📢 Saluran",url=CHANNEL_URL),
+            InlineKeyboardButton("🆘 Support",url=SUPPORT_URL)
+        ]
+    ]
+
+    photo = await generate_profile_card(context.bot,user)
+
+    text = (
+        f"🤖 {BOT_BRAND}\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        f"👋 Selamat datang {user.first_name}\n\n"
+
+        f"👤 Nama : {user.first_name}\n"
+        f"🔗 Username : @{user.username if user.username else 'None'}\n"
+        f"🆔 ID : {user.id}\n"
+        f"📊 Status : {status}\n"
+        f"📅 Tanggal : {date}\n\n"
+
+        "🚀 Sistem laporan otomatis aktif\n"
+        "📨 Gunakan tombol dibawah untuk mengirim laporan."
+    )
+
+    if photo:
+
+        await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=photo,
+            caption=text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    else:
+
         await update.message.reply_text(
-            "⏳ Tunggu 2 menit sebelum kirim laporan lagi."
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+# ================= BUTTON =================
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    if query.data == "report":
+
+        now = time.time()
+
+        if user_id in LAST_REPORT:
+
+            remaining = REPORT_DELAY - (now - LAST_REPORT[user_id])
+
+            if remaining > 0:
+
+                await query.message.reply_text(
+                    f"⏳ {BOT_BRAND}\nTunggu {int(remaining)} detik sebelum laporan berikutnya."
+                )
+                return
+
+        WAITING_REPORT.add(user_id)
+
+        await query.message.reply_text(
+            f"📨 {BOT_BRAND}\n\nKirim username target\n\nContoh:\n@username"
+        )
+
+# ================= HANDLE MESSAGE =================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user = update.effective_user
+    text = update.message.text
+
+    if user.id not in WAITING_REPORT:
+        return
+
+    if not validate_username(text):
+
+        await update.message.reply_text(
+            f"❌ {BOT_BRAND}\nUsername tidak valid.\nGunakan format: @username"
         )
         return
 
-    user_last_report[user.id] = now
+    WAITING_REPORT.remove(user.id)
 
-    headers = {
-        "accept": "application/json",
-        "api-key": BREVO_API_KEY,
-        "content-type": "application/json"
-    }
+    LAST_REPORT[user.id] = time.time()
 
-    email_body = EMAIL_TEMPLATE.format(
+    case_id = generate_case()
+
+    now = datetime.utcnow()
+
+    date = now.strftime("%Y-%m-%d")
+    time_now = now.strftime("%H:%M:%S")
+
+    target = text.replace("@","")
+
+    email_content = EMAIL_TEMPLATE.format(
+        case_id=case_id,
         target=target,
-        target_clean=target_clean,
-        target_link=target_link
+        name=user.first_name,
+        username=user.username if user.username else "None",
+        user_id=user.id,
+        date=date,
+        time=time_now
     )
 
-    data = {
-        "sender": {"email": SENDER_EMAIL},
-        "to": [{"email": email} for email in EMAIL_RECEIVERS],
-        "subject": EMAIL_SUBJECT,
-        "textContent": email_body
-    }
+    email_queue.put(email_content)
 
-    response = requests.post(
-        "https://api.brevo.com/v3/smtp/email",
-        headers=headers,
-        json=data
+    cursor.execute(
+        "INSERT INTO reports VALUES(?,?,?,?)",
+        (case_id,target,user.id,date)
     )
 
-    if response.status_code == 201:
-        await update.message.reply_text(
-            f"✅ Laporan berhasil dikirim!\n\n📨 Target: {target}\n🔗 {target_link}"
-        )
-    else:
-        await update.message.reply_text(
-            "❌ Gagal mengirim laporan.\nCoba lagi nanti."
-        )
+    conn.commit()
 
-    context.user_data["awaiting_report"] = False
+    logging.info(f"REPORT {case_id} | USER {user.id} | TARGET @{target}")
+
+    await update.message.reply_text(
+
+        f"✅ {BOT_BRAND}\n\n"
+        f"Laporan berhasil dikirim\n\n"
+        f"🆔 Case ID : {case_id}\n"
+        f"🎯 Target : @{target}\n"
+        f"🔗 https://t.me/{target}"
+    )
+
+# ================= ERROR HANDLER =================
+
+async def error_handler(update, context):
+
+    logging.error(msg="Exception while handling update:", exc_info=context.error)
 
 # ================= MAIN =================
+
 def main():
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_report_button, pattern="buat_laporan"))
-    app.add_handler(CallbackQueryHandler(handle_request_access, pattern="request_access"))
-    app.add_handler(CallbackQueryHandler(handle_owner_decision, pattern="^(approve|reject)_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_target))
 
-    print("🚀 Bot berjalan dengan sukses...")
+    app.add_handler(
+        CallbackQueryHandler(check_join_button,pattern="check_join")
+    )
 
-    app.run_polling(drop_pending_updates=True)
+    app.add_handler(CallbackQueryHandler(button))
+
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    )
+
+    app.add_error_handler(error_handler)
+
+    print(f"{BOT_BRAND} berjalan...")
+
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
