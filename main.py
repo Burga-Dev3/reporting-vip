@@ -247,23 +247,33 @@ async def generate_profile_card(bot, user):
 
     return bio
 
-# ================= START =================
+# ================= START COMMAND =================
 
-async def check_join_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    query = update.callback_query
-    await query.answer()
-
-    user = query.from_user
+    user = update.effective_user
 
     joined = await check_join(context.bot, user.id)
 
     if not joined:
 
-        await query.message.reply_text(
-            f"❌ {BOT_BRAND}\n\nKamu belum join saluran."
+        keyboard = [
+            [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_URL)],
+            [InlineKeyboardButton("✅ Saya Sudah Join", callback_data="check_join")]
+        ]
+
+        await update.message.reply_text(
+            f"🤖 {BOT_BRAND}\n\n"
+            "Untuk menggunakan bot ini kamu harus join saluran terlebih dahulu.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
         return
+
+    status = get_user_status(user.id)
+
+    now = datetime.utcnow()
+    date = now.strftime("%Y-%m-%d")
 
     keyboard = [
         [InlineKeyboardButton("📋 Kirim Laporan", callback_data="report")],
@@ -273,27 +283,7 @@ async def check_join_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
 
-    await query.message.reply_text(
-        f"✅ {BOT_BRAND}\n\nAkses diberikan.\nSilakan kirim laporan.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-    return
-
-    status = get_user_status(user.id)
-
-    now = datetime.utcnow()
-    date = now.strftime("%Y-%m-%d")
-
-    keyboard = [
-        [InlineKeyboardButton("📋 Kirim Laporan",callback_data="report")],
-        [
-            InlineKeyboardButton("📢 Saluran",url=CHANNEL_URL),
-            InlineKeyboardButton("🆘 Support",url=SUPPORT_URL)
-        ]
-    ]
-
-    photo = await generate_profile_card(context.bot,user)
+    photo = await generate_profile_card(context.bot, user)
 
     text = (
         f"🤖 {BOT_BRAND}\n"
