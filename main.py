@@ -317,6 +317,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
+# ================= CHECK JOIN BUTTON =================
+
+async def check_join_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user = query.from_user
+
+    joined = await check_join(context.bot, user.id)
+
+    if not joined:
+
+        await query.message.reply_text(
+            f"❌ {BOT_BRAND}\n\nKamu belum join saluran."
+        )
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("📋 Kirim Laporan", callback_data="report")],
+        [
+            InlineKeyboardButton("📢 Saluran", url=CHANNEL_URL),
+            InlineKeyboardButton("🆘 Support", url=SUPPORT_URL)
+        ]
+    ]
+
+    await query.message.reply_text(
+        f"✅ {BOT_BRAND}\n\nAkses diberikan.\nSilakan kirim laporan.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 # ================= BUTTON =================
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
