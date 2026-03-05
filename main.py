@@ -249,26 +249,34 @@ async def generate_profile_card(bot, user):
 
 # ================= START =================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_join_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    user = update.effective_user
+    query = update.callback_query
+    await query.answer()
 
-    cursor.execute("INSERT OR IGNORE INTO users VALUES(?)",(user.id,))
-    conn.commit()
+    user = query.from_user
 
-    joined = await check_join(context.bot,user.id)
+    joined = await check_join(context.bot, user.id)
 
     if not joined:
 
-        keyboard = [
-            [InlineKeyboardButton("📢 Join Saluran",url=CHANNEL_URL)],
-            [InlineKeyboardButton("✅ Saya Sudah Join",callback_data="check_join")]
-        ]
-
-        await update.message.reply_text(
-            f"🚫 {BOT_BRAND}\n\nKamu harus join saluran terlebih dahulu untuk menggunakan bot ini.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(
+            f"❌ {BOT_BRAND}\n\nKamu belum join saluran."
         )
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("📋 Kirim Laporan", callback_data="report")],
+        [
+            InlineKeyboardButton("📢 Saluran", url=CHANNEL_URL),
+            InlineKeyboardButton("🆘 Support", url=SUPPORT_URL)
+        ]
+    ]
+
+    await query.message.reply_text(
+        f"✅ {BOT_BRAND}\n\nAkses diberikan.\nSilakan kirim laporan.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
         return
 
